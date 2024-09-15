@@ -1,19 +1,44 @@
-#include <ESP_I2S.h>  // ESP I2S library for reading PDM mic
-#include "FS.h"       // Filesystem (for SD card)
-#include "SD.h"       // SD card library
-#include "SPI.h"      // SPI library
+#include <ESP_I2S.h>    // I2S library for reading PDM mic
+#include "FS.h"         // Filesystem (for SD card)
+#include "SD.h"         // SD card library
+#include "SPI.h"        // SPI library
+#include "BLEDevice.h"  // BLE library
+#include "BLE2902.h"    // BLE descriptor for notifications
 
-I2SClass I2S;  // Create an I2S instance
+// Define BLE service and characteristic UUIDs
+#define SERVICE_UUID        "0000FFF0-0000-1000-8000-00805F9B34FB"
+#define CHARACTERISTIC_UUID "0000FFF1-0000-1000-8000-00805F9B34FB"
 
 // Configuration constants
 #define I2S_WS 42        // PDM clock
 #define I2S_SD 41        // PDM data
 #define SAMPLE_RATE 16000U
 #define SAMPLE_BITS 16
-#define RECORD_TIME 20   // seconds
-#define WAV_FILE_NAME "arduino_rec"
+#define RECORD_TIME 10   // Record time in seconds
+#define WAV_FILE_NAME "/recording.wav"
 #define WAV_HEADER_SIZE 44
-#define BUFFER_SIZE 1024  // Buffer size for each read (in bytes)
+#define BUFFER_SIZE 1024  // Buffer size for audio samples (in bytes)
+#define BLE_CHUNK_SIZE 20  // Max BLE chunk size (20 bytes for notifications)
+
+I2SClass I2S;
+BLEServer* pServer;
+BLEService* pService;
+BLECharacteristic* pCharacteristic;
+File audioFile;
+bool deviceConnected = false;  // To track BLE connection
+
+// Callback to handle BLE connection and disconnection
+class MyServerCallbacks: public BLEServerCallbacks {
+  void onConnect(BLEServer* pServer) {
+    deviceConnected = true;
+    Serial.println("BLE Device Connected.");
+  }
+
+  void onDisconnect(BLEServer* pServer) {
+    deviceConnected = false;
+    Serial.println("BLE Device Disconnected.");
+  }
+};
 
 void setup() {
   Serial.begin(115200);
@@ -32,12 +57,32 @@ void setup() {
     while (1);
   }
 
-  Serial.println("Ready to start recording and visualizing...");
-  record_wav();  // Start recording to WAV file
+  // Setup BLE
+  BLEDevice::init("XIAO_S3_SENSE");
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+  pService = pServer->createService(SERVICE_UUID);
+  pCharacteristic = pService->createCharacteristic(
+                      CHARACTERISTIC_UUID,
+                      BLECharacteristic::PROPERTY_NOTIFY
+                    );
+  // Add BLE descriptor for notifications
+  pCharacteristic->addDescriptor(new BLE2902());
+  pService->start();
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->start();
+
+  Serial.println("Waiting for BLE connection...");
 }
 
 void loop() {
-  delay(1000);  // Keep the loop simple for now
+  // Start recording and BLE sending when connected
+  if (deviceConnected) {
+    Serial.println("BLE Device connected, starting recording...");
+    record_wav();  // Start recording to WAV file
+    send_file_over_ble();  // Send the file after recording
+    delay(1000);  // Add delay to avoid overwhelming the BLE connection
+  }
 }
 
 void record_wav() {
@@ -47,12 +92,16 @@ void record_wav() {
   uint32_t total_bytes_written = 0;
   
   // Open the WAV file on the SD card
-  File file = SD.open("/" WAV_FILE_NAME ".wav", FILE_WRITE);
+  audioFile = SD.open(WAV_FILE_NAME, FILE_WRITE);
+  if (!audioFile) {
+    Serial.println("Failed to open file for writing.");
+    return;
+  }
   
   // Write the WAV header to the file
   uint8_t wav_header[WAV_HEADER_SIZE];
   generate_wav_header(wav_header, record_size, SAMPLE_RATE);
-  file.write(wav_header, WAV_HEADER_SIZE);
+  audioFile.write(wav_header, WAV_HEADER_SIZE);
 
   // Start recording in chunks
   unsigned long startMillis = millis();
@@ -67,12 +116,9 @@ void record_wav() {
       rec_buffer[buffer_index++] = sample & 0xFF;           // Low byte
       rec_buffer[buffer_index++] = (sample >> 8) & 0xFF;    // High byte
       
-      // Plot the data on the Serial Plotter
-      Serial.println(sample);  // Print sample for visualization
-      
       // If buffer is full, write to SD card
       if (buffer_index >= BUFFER_SIZE) {
-        file.write(rec_buffer, BUFFER_SIZE);
+        audioFile.write(rec_buffer, BUFFER_SIZE);
         total_bytes_written += BUFFER_SIZE;
         buffer_index = 0;  // Reset buffer index
       }
@@ -81,14 +127,42 @@ void record_wav() {
 
   // Write any remaining data in the buffer
   if (buffer_index > 0) {
-    file.write(rec_buffer, buffer_index);
+    audioFile.write(rec_buffer, buffer_index);
     total_bytes_written += buffer_index;
   }
 
   // Update the WAV header with the actual data size
-  update_wav_header(file, total_bytes_written);
-  file.close();
-  Serial.printf("The recording is over. Total bytes written: %d\n", total_bytes_written);
+  update_wav_header(audioFile, total_bytes_written);
+  audioFile.close();
+  Serial.printf("Recording finished. Total bytes written: %d\n", total_bytes_written);
+}
+
+void send_file_over_ble() {
+  // Reopen the file for reading
+  audioFile = SD.open(WAV_FILE_NAME, FILE_READ);
+  
+  if (!audioFile) {
+    Serial.println("Failed to open file for reading.");
+    return;
+  }
+
+  uint8_t buffer[BUFFER_SIZE];
+  while (audioFile.available()) {
+    int bytesRead = audioFile.read(buffer, BUFFER_SIZE);
+    int bytesSent = 0;
+
+    // Send data in BLE_CHUNK_SIZE chunks
+    while (bytesSent < bytesRead) {
+      int chunkSize = min(BLE_CHUNK_SIZE, bytesRead - bytesSent);
+      pCharacteristic->setValue(&buffer[bytesSent], chunkSize);
+      pCharacteristic->notify();  // Send the buffer over BLE
+      bytesSent += chunkSize;
+      delay(10);  // Small delay to prevent overwhelming the BLE connection
+    }
+  }
+
+  audioFile.close();
+  Serial.println("File sent over BLE.");
 }
 
 void generate_wav_header(uint8_t *wav_header, uint32_t wav_size, uint32_t sample_rate) {
