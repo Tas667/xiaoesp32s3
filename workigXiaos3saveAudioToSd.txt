@@ -1,0 +1,135 @@
+#include <ESP_I2S.h>  // ESP I2S library for reading PDM mic
+#include "FS.h"       // Filesystem (for SD card)
+#include "SD.h"       // SD card library
+#include "SPI.h"      // SPI library
+
+I2SClass I2S;  // Create an I2S instance
+
+// Configuration constants
+#define I2S_WS 42        // PDM clock
+#define I2S_SD 41        // PDM data
+#define SAMPLE_RATE 16000U
+#define SAMPLE_BITS 16
+#define RECORD_TIME 20   // seconds
+#define WAV_FILE_NAME "arduino_rec"
+#define WAV_HEADER_SIZE 44
+#define BUFFER_SIZE 1024  // Buffer size for each read (in bytes)
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial);  // Wait for serial connection
+
+  // Setup I2S for PDM microphone
+  I2S.setPinsPdmRx(I2S_WS, I2S_SD); // Set pins for PDM mode
+  if (!I2S.begin(I2S_MODE_PDM_RX, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO)) {
+    Serial.println("Failed to initialize I2S!");
+    while (1);  // Stop if initialization fails
+  }
+
+  // Initialize SD card
+  if (!SD.begin(21)) {
+    Serial.println("Failed to mount SD Card!");
+    while (1);
+  }
+
+  Serial.println("Ready to start recording and visualizing...");
+  record_wav();  // Start recording to WAV file
+}
+
+void loop() {
+  delay(1000);  // Keep the loop simple for now
+}
+
+void record_wav() {
+  uint32_t record_size = (SAMPLE_RATE * SAMPLE_BITS / 8) * RECORD_TIME;
+  uint8_t rec_buffer[BUFFER_SIZE];  // Buffer to hold audio samples
+  size_t bytes_written = 0;
+  uint32_t total_bytes_written = 0;
+  
+  // Open the WAV file on the SD card
+  File file = SD.open("/" WAV_FILE_NAME ".wav", FILE_WRITE);
+  
+  // Write the WAV header to the file
+  uint8_t wav_header[WAV_HEADER_SIZE];
+  generate_wav_header(wav_header, record_size, SAMPLE_RATE);
+  file.write(wav_header, WAV_HEADER_SIZE);
+
+  // Start recording in chunks
+  unsigned long startMillis = millis();
+  int buffer_index = 0;
+  
+  while ((millis() - startMillis) < (RECORD_TIME * 1000)) {
+    // Read a single audio sample from the PDM microphone
+    int16_t sample = I2S.read();  // Read one sample
+    
+    if (sample != -1 && sample != 1) {  // Check if valid sample
+      // Store the sample in the buffer
+      rec_buffer[buffer_index++] = sample & 0xFF;           // Low byte
+      rec_buffer[buffer_index++] = (sample >> 8) & 0xFF;    // High byte
+      
+      // Plot the data on the Serial Plotter
+      Serial.println(sample);  // Print sample for visualization
+      
+      // If buffer is full, write to SD card
+      if (buffer_index >= BUFFER_SIZE) {
+        file.write(rec_buffer, BUFFER_SIZE);
+        total_bytes_written += BUFFER_SIZE;
+        buffer_index = 0;  // Reset buffer index
+      }
+    }
+  }
+
+  // Write any remaining data in the buffer
+  if (buffer_index > 0) {
+    file.write(rec_buffer, buffer_index);
+    total_bytes_written += buffer_index;
+  }
+
+  // Update the WAV header with the actual data size
+  update_wav_header(file, total_bytes_written);
+  file.close();
+  Serial.printf("The recording is over. Total bytes written: %d\n", total_bytes_written);
+}
+
+void generate_wav_header(uint8_t *wav_header, uint32_t wav_size, uint32_t sample_rate) {
+  uint32_t file_size = wav_size + WAV_HEADER_SIZE - 8;
+  uint32_t byte_rate = SAMPLE_RATE * SAMPLE_BITS / 8;
+  const uint8_t set_wav_header[] = {
+    'R', 'I', 'F', 'F',                   // ChunkID
+    (uint8_t)(file_size & 0xff),           // ChunkSize (4 bytes)
+    (uint8_t)((file_size >> 8) & 0xff),
+    (uint8_t)((file_size >> 16) & 0xff),
+    (uint8_t)((file_size >> 24) & 0xff),
+    'W', 'A', 'V', 'E',                   // Format
+    'f', 'm', 't', ' ',                   // Subchunk1ID
+    0x10, 0x00, 0x00, 0x00,               // Subchunk1Size (16 for PCM)
+    0x01, 0x00,                           // AudioFormat (1 for PCM)
+    0x01, 0x00,                           // NumChannels (1 channel)
+    (uint8_t)(sample_rate & 0xff),         // SampleRate (4 bytes)
+    (uint8_t)((sample_rate >> 8) & 0xff),
+    (uint8_t)((sample_rate >> 16) & 0xff),
+    (uint8_t)((sample_rate >> 24) & 0xff),
+    (uint8_t)(byte_rate & 0xff),           // ByteRate (4 bytes)
+    (uint8_t)((byte_rate >> 8) & 0xff),
+    (uint8_t)((byte_rate >> 16) & 0xff),
+    (uint8_t)((byte_rate >> 24) & 0xff),
+    0x02, 0x00,                           // BlockAlign
+    0x10, 0x00,                           // BitsPerSample (16 bits)
+    'd', 'a', 't', 'a',                   // Subchunk2ID
+    (uint8_t)(wav_size & 0xff),            // Subchunk2Size (4 bytes)
+    (uint8_t)((wav_size >> 8) & 0xff),
+    (uint8_t)((wav_size >> 16) & 0xff),
+    (uint8_t)((wav_size >> 24) & 0xff),
+  };
+  memcpy(wav_header, set_wav_header, sizeof(set_wav_header));
+}
+
+void update_wav_header(File &file, uint32_t total_bytes_written) {
+  // Update file size and data chunk size in the WAV header
+  file.seek(4); // Move to ChunkSize position
+  uint32_t file_size = total_bytes_written + WAV_HEADER_SIZE - 8;
+  file.write((uint8_t *)&file_size, 4);
+  
+  file.seek(40); // Move to Subchunk2Size position
+  file.write((uint8_t *)&total_bytes_written, 4);
+}
