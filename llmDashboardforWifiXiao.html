@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+   <title>Unified XIAO & LLM Dashboard</title>
+   <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+   <style>
+       body {
+           background-color: #2d2d2d;
+           color: #e0e0e0;
+           font-family: Arial, sans-serif;
+           margin: 20px;
+           padding: 0;
+       }
+       .container {
+           max-width: 1200px;
+           margin: 0 auto;
+       }
+       .api-section, .mb-6 {
+           display: flex;
+           align-items: center;
+           margin-bottom: 1.5rem;
+       }
+       .api-section input, #userInput, #apiKey {
+           flex-grow: 1;
+           padding: 10px;
+           border: none;
+           border-radius: 5px;
+           margin-right: 10px;
+           background-color: #4a4a4a;
+           color: #e0e0e0;
+           font-size: 1em;
+       }
+       #userInput {
+           height: 100px;
+           resize: vertical;
+           border: 1px solid #4a4a4a;
+       }
+       .api-section button, .mb-6 button {
+           background-color: #28a745;
+           color: white;
+           border: none;
+           padding: 10px 15px;
+           border-radius: 5px;
+           cursor: pointer;
+           font-size: 1em;
+           transition: background-color 0.3s;
+           margin-right: 5px;
+       }
+       .api-section button:hover, .mb-6 button:hover {
+           background-color: #218838;
+       }
+       .api-section button:disabled, .mb-6 button:disabled {
+           background-color: #6c757d;
+           cursor: not-allowed;
+       }
+       button.recording {
+           background-color: #dc3545 !important;
+       }
+       .progress-bar {
+           width: 100%;
+           background-color: #555555;
+           border-radius: 5px;
+           overflow: hidden;
+           margin-top: 10px;
+           height: 20px;
+       }
+       .progress-fill {
+           height: 100%;
+           width: 0%;
+           background-color: #ff9900;
+           transition: width 0.2s;
+       }
+       #recordingStatus {
+           margin-top: 10px;
+           font-weight: bold;
+       }
+       #player {
+           display: block;
+           margin-top: 20px;
+           width: 100%;
+       }
+       #transcriptionResult {
+           margin-top: 20px;
+       }
+       #transcriptionResult h2 {
+           margin-bottom: 10px;
+       }
+       #transcriptionText {
+           background-color: #3d3d3d;
+           padding: 10px;
+           border-radius: 5px;
+           min-height: 50px;
+       }
+       .card {
+           background-color: #3d3d3d;
+           border: 1px solid #4a4a4a;
+           max-height: 600px;
+           overflow-y: auto;
+           padding: 1rem;
+           border-radius: 0.5rem;
+       }
+       .card::-webkit-scrollbar {
+           width: 10px;
+       }
+       .card::-webkit-scrollbar-track {
+           background: #2d2d2d;
+       }
+       .card::-webkit-scrollbar-thumb {
+           background: #888;
+           border-radius: 5px;
+       }
+       .card::-webkit-scrollbar-thumb:hover {
+           background: #555;
+       }
+       .btn {
+           background-color: #8e7162;
+           color: #fff9f0;
+           padding: 0.5rem 1rem;
+           border-radius: 0.375rem;
+           cursor: pointer;
+           font-size: 1rem;
+           transition: background-color 0.3s;
+           margin-right: 0.5rem;
+       }
+       .btn:hover {
+           background-color: #7a6052;
+       }
+       .item {
+           cursor: pointer;
+           transition: background-color 0.3s;
+           padding: 1rem;
+           border-radius: 0.375rem;
+           margin-bottom: 1rem;
+       }
+       .item:nth-child(even) {
+           background-color: #454545;
+       }
+       .item:hover {
+           background-color: #555555;
+       }
+       .item-content {
+           display: none;
+           margin-top: 0.5rem;
+       }
+       .delete-btn {
+           display: none;
+           background-color: #ff4136;
+           color: white;
+           border: none;
+           padding: 2px 5px;
+           border-radius: 3px;
+           cursor: pointer;
+           font-size: 0.8em;
+       }
+       .item:hover .delete-btn {
+           display: inline-block;
+       }
+       #logWindow {
+           display: none;
+           position: fixed;
+           bottom: 10px;
+           right: 10px;
+           width: 300px;
+           height: 200px;
+           background-color: #2d2d2d;
+           border: 1px solid #4a4a4a;
+           overflow-y: auto;
+           z-index: 1000;
+           padding: 1rem;
+           border-radius: 0.5rem;
+           font-family: monospace;
+           font-size: 0.875rem;
+       }
+   </style>
+</head>
+<body>
+   <div class="container">
+       <h1 class="text-3xl font-bold mb-6">Unified XIAO & LLM Dashboard</h1>
+       
+       <div class="api-section">
+           <input type="password" id="apiKey" placeholder="Enter your OpenAI API key" />
+           <button id="connectButton">Connect</button>
+           <button id="disconnectButton" style="background-color: #dc3545; display: none;">Disconnect</button>
+           <button onclick="toggleDebugLog()" class="btn">Debug Log</button>
+       </div>
+       
+       <div class="mb-6">
+           <button id="recordButton" disabled>🎤 Record 10s</button>
+           <div class="progress-bar">
+               <div class="progress-fill"></div>
+           </div>
+           <div id="recordingStatus">Ready</div>
+           <audio id="player" controls></audio>
+
+           <div id="transcriptionResult">
+               <h2 class="text-2xl font-semibold mb-2">Transcription:</h2>
+               <p id="transcriptionText">-</p>
+           </div>
+       </div>
+
+       <div class="mb-6 flex items-start">
+           <textarea id="userInput" placeholder="Enter your thoughts or requests..." class="flex-grow p-2 rounded shadow mr-2 focus:outline-none focus:ring-2 focus:ring-amber-400"></textarea>
+           <div class="flex flex-col">
+               <button onclick="startVoiceInput()" class="btn mb-2">🎤 Start</button>
+               <button onclick="stopVoiceInput()" class="btn mb-2">⏹️ Stop</button>
+               <button onclick="processInput()" class="btn">Process</button>
+           </div>
+       </div>
+
+       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6" id="results">
+           <div class="card">
+               <h2 class="text-2xl font-semibold mb-4 text-amber-400">Ideas/Questions</h2>
+               <div id="ideas-content" class="space-y-4"></div>
+           </div>
+           <div class="card">
+               <h2 class="text-2xl font-semibold mb-4 text-amber-400">Shopping</h2>
+               <div id="shopping-content" class="space-y-4"></div>
+           </div>
+           <div class="card">
+               <h2 class="text-2xl font-semibold mb-4 text-amber-400">Reminders</h2>
+               <div id="reminders-content" class="space-y-4"></div>
+           </div>
+           <div class="card">
+               <h2 class="text-2xl font-semibold mb-4 text-amber-400">Recent Purchases</h2>
+               <div id="purchases-content" class="space-y-4"></div>
+           </div>
+       </div>
+   </div>
+
+   <div id="logWindow">
+       <h3 class="text-lg font-semibold mb-2">Debug Log</h3>
+       <div id="logContent" class="space-y-1"></div>
+   </div>
+
+   <script>
+       const xiaoServerURL = 'http://192.168.0.136'; // Replace with your ESP32's IP address
+       let isRecording = false;
+       let apiKey = '';
+       let openAIReady = false;
+       let progressInterval = null;
+
+       const recordButton = document.getElementById('recordButton');
+       const connectButton = document.getElementById('connectButton');
+       const disconnectButton = document.getElementById('disconnectButton');
+       const recordingStatus = document.getElementById('recordingStatus');
+       const progressBar = document.querySelector('.progress-fill');
+       const transcriptionText = document.getElementById('transcriptionText');
+       const player = document.getElementById('player');
+       const logWindow = document.getElementById('logWindow');
+       const logContent = document.getElementById('logContent');
+       const apiKeyInput = document.getElementById('apiKey');
+       const userInput = document.getElementById('userInput');
+
+       const systemPrompt = `
+    You are an AI assistant integrated into a personal dashboard. Your role is to interpret user inputs and generate structured data for various life areas: Ideas/Questions, Shopping, Reminders, and Purchases.
+
+    Respond with a JSON object containing relevant information based on the user's input. The JSON should have separate fields for each category, even if some are empty. Each category should be structured as follows:
+
+    Ideas/Questions:
+    {
+      "ideas": {
+        "title": "Main idea or question title",
+        "description": "A paragraph explaining the main idea or answering the question in detail",
+        "keyPoints": ["Key point 1", "Key point 2", "Key point 3"],
+        "relatedIdeas": [
+          {
+            "title": "Related idea 1",
+            "description": "Brief description of related idea 1"
+          },
+          {
+            "title": "Related idea 2",
+            "description": "Brief description of related idea 2"
+          }
+        ],
+        "actionItems": ["Action item 1", "Action item 2", "Action item 3"]
+      }
+    }
+
+    Shopping:
+    {
+      "shopping": [
+        {
+          "item": "Item name",
+          "quantity": "Quantity",
+          "calories": "Estimated calories per serving",
+          "fat": "Estimated fat content",
+          "protein": "Estimated protein content",
+          "carbs": "Estimated carbohydrate content",
+          "sugar": "Estimated sugar content",
+          "vitamins": "Notable vitamins and minerals",
+          "healthRating": "High/Medium/Low",
+          "notes": "Any additional notes or recommendations"
+        }
+      ]
+    }
+
+    Reminders:
+    {
+      "reminders": [
+        {
+          "task": "Task description",
+          "dueDate": "YYYY-MM-DD",
+          "dueTime": "HH:MM",
+          "priority": "High/Medium/Low",
+          "notes": "Any additional notes"
+        }
+      ]
+    }
+
+    Purchases:
+    {
+      "purchases": [
+        {
+          "item": "Item purchased",
+          "price": "Price (if provided)",
+          "purchaseTime": "YYYY-MM-DD HH:MM",
+          "calories": "Estimated calories (if applicable)",
+          "fat": "Estimated fat content (if applicable)",
+          "protein": "Estimated protein content (if applicable)",
+          "carbs": "Estimated carbohydrate content (if applicable)",
+          "sugar": "Estimated sugar content (if applicable)",
+          "vitamins": "Notable vitamins and minerals (if applicable)",
+          "healthRating": "High/Medium/Low (if applicable)",
+          "notes": "Any additional notes or recommendations"
+        }
+      ]
+    }
+
+    Always strive to provide relevant, actionable information based on the user's input, even if it's not perfectly coherent. If you need to make assumptions to fill in gaps, do so reasonably and note it in your response. Maintain the user's writing style in your responses.
+    `;
+
+       window.onload = async function() {
+           const storedKey = localStorage.getItem('openaiApiKey');
+           if (storedKey) {
+               apiKey = storedKey;
+               try {
+                   const response = await fetch('https://api.openai.com/v1/models', {
+                       headers: {
+                           'Authorization': `Bearer ${apiKey}`
+                       }
+                   });
+                   if (response.ok) {
+                       openAIReady = true;
+                       connectButton.style.display = 'none';
+                       disconnectButton.style.display = 'inline-block';
+                       recordButton.disabled = false;
+                       log('API key loaded and verified.');
+                   }
+               } catch (error) {
+                   log('Stored API key invalid.');
+                   localStorage.removeItem('openaiApiKey');
+               }
+           }
+       };
+
+       connectButton.addEventListener('click', async () => {
+           const enteredKey = apiKeyInput.value.trim();
+           if (!enteredKey) {
+               alert('Please enter a valid OpenAI API key.');
+               return;
+           }
+           
+           try {
+               const response = await fetch('https://api.openai.com/v1/models', {
+                   headers: {
+                       'Authorization': `Bearer ${enteredKey}`
+                   }
+               });
+               if (response.ok) {
+                   apiKey = enteredKey;
+                   openAIReady = true;
+                   localStorage.setItem('openaiApiKey', apiKey);
+                   connectButton.style.display = 'none';
+                   disconnectButton.style.display = 'inline-block';
+                   recordButton.disabled = false;
+                   log('Connected to OpenAI API.');
+                   apiKeyInput.value = '';
+               } else {
+                   throw new Error('Invalid API key');
+               }
+           } catch (error) {
+               alert('Failed to connect to OpenAI: ' + error.message);
+               log('Connection failed: ' + error.message);
+           }
+       });
+
+       disconnectButton.addEventListener('click', () => {
+           apiKey = '';
+           openAIReady = false;
+           localStorage.removeItem('openaiApiKey');
+           connectButton.style.display = 'inline-block';
+           disconnectButton.style.display = 'none';
+           recordButton.disabled = true;
+           log('Disconnected from OpenAI API.');
+           transcriptionText.textContent = '-';
+           userInput.value = '';
+       });
+
+       // Updated recordButton event listener
+       recordButton.addEventListener('click', async () => {
+           if (isRecording || !openAIReady) return;
+           
+           isRecording = true;
+           recordButton.disabled = true;
+           recordButton.classList.add('recording');
+           recordButton.textContent = '⏹️ Recording...';
+           recordingStatus.textContent = 'Recording...';
+           player.src = '';
+           progressBar.style.width = '0%';
+
+           const startTime = Date.now();
+           
+           // Start Progress Bar
+           progressInterval = setInterval(() => {
+               const elapsed = Date.now() - startTime;
+               const progress = Math.min((elapsed / 10000) * 100, 100);
+               progressBar.style.width = progress + '%';
+           }, 100);
+
+           try {
+               // Start recording
+               const recordResponse = await fetch(`${xiaoServerURL}/record`);
+               if (!recordResponse.ok) throw new Error('Recording failed on ESP32.');
+               
+               // Recording is complete when response is received
+               log('Recording complete.');
+               
+               // Fetch the audio
+               const audioResponse = await fetch(`${xiaoServerURL}/play`);
+               if (!audioResponse.ok) throw new Error('Failed to fetch audio.');
+               const audioBlob = await audioResponse.blob();
+               
+               // Set up the audio source and play
+               const audioURL = URL.createObjectURL(audioBlob);
+               player.src = audioURL;
+               player.play();
+               
+               // Transcribe the audio
+               await transcribeAudio(audioBlob);
+               
+           } catch (error) {
+               log(`Error during recording: ${error.message}`);
+               alert('Error during recording: ' + error.message);
+           } finally {
+               resetRecordingState();
+           }
+       });
+
+       async function transcribeAudio(audioBlob) {
+           if (!apiKey || !openAIReady) {
+               log("Error: OpenAI connection not ready");
+               return;
+           }
+
+           const formData = new FormData();
+           formData.append('file', audioBlob, 'audio.wav');
+           formData.append('model', 'whisper-1');
+
+           try {
+               log('Starting transcription...');
+               const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+                   method: 'POST',
+                   headers: {
+                       'Authorization': `Bearer ${apiKey}`
+                   },
+                   body: formData
+               });
+
+               const result = await response.json();
+               if (response.ok) {
+                   transcriptionText.textContent = result.text;
+                   log('Audio transcribed successfully.');
+                   userInput.value = result.text;
+                   await processInput();
+               } else {
+                   throw new Error(result.error.message || 'Transcription failed.');
+               }
+           } catch (error) {
+               log(`Error during transcription: ${error.message}`);
+               alert('Error during transcription: ' + error.message);
+           }
+       }
+
+       function log(message) {
+           const timestamp = new Date().toLocaleTimeString();
+           logContent.innerHTML += `[${timestamp}] ${message}<br>`;
+           logWindow.scrollTop = logWindow.scrollHeight;
+       }
+
+       function toggleDebugLog() {
+           logWindow.style.display = logWindow.style.display === 'none' ? 'block' : 'none';
+       }
+
+       async function processInput() {
+           const currentApiKey = apiKey || document.getElementById("apiKey").value;
+           const textToProcess = userInput.value.trim();
+
+           if (!currentApiKey || !textToProcess) {
+               log("Error: API key and input are required");
+               alert("Please provide both an API key and input text.");
+               return;
+           }
+
+           log(`Processing input: "${textToProcess}"`);
+
+           try {
+               const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                   method: 'POST',
+                   headers: {
+                       'Content-Type': 'application/json',
+                       'Authorization': `Bearer ${currentApiKey}`
+                   },
+                   body: JSON.stringify({
+                       model: "gpt-3.5-turbo",
+                       messages: [
+                           {"role": "system", "content": systemPrompt},
+                           {"role": "user", "content": textToProcess}
+                       ]
+                   })
+               });
+
+               const data = await response.json();
+               log("Received response from API");
+
+               if (response.ok) {
+                   if (data.choices && data.choices[0] && data.choices[0].message) {
+                       const aiResponse = data.choices[0].message.content;
+                       log("AI Response:");
+                       log(aiResponse);
+
+                       let result;
+                       try {
+                           result = JSON.parse(aiResponse);
+                           log("Parsed API response successfully");
+                           log("API Response: " + JSON.stringify(result, null, 2));
+                           updateDashboard(result);
+                       } catch (parseError) {
+                           log("Error parsing API response as JSON.");
+                           alert("Received malformed JSON from API.");
+                       }
+                   } else {
+                       throw new Error("Unexpected response structure from OpenAI API");
+                   }
+               } else {
+                   throw new Error(data.error.message);
+               }
+           } catch (error) {
+               log(`Error: ${error.message}`);
+               alert('Error processing input: ' + error.message);
+           }
+       }
+
+       function updateDashboard(response) {
+           log("Updating dashboard...");
+           if (response.ideas) updateIdeasSection(response.ideas);
+           if (response.shopping) updateShoppingSection(response.shopping);
+           if (response.reminders) updateRemindersSection(response.reminders);
+           if (response.purchases) updatePurchasesSection(response.purchases);
+           log("Dashboard update complete");
+       }
+
+       function updateIdeasSection(ideas) {
+           try {
+               const section = document.getElementById('ideas-content');
+               if (!ideas || Object.keys(ideas).length === 0) return;
+
+               const title = ideas.title || 'No Title';
+               const description = ideas.description || 'No Description';
+               const keyPoints = Array.isArray(ideas.keyPoints) ? ideas.keyPoints : [];
+               const relatedIdeas = Array.isArray(ideas.relatedIdeas) ? ideas.relatedIdeas : [];
+               const actionItems = Array.isArray(ideas.actionItems) ? ideas.actionItems : [];
+
+               let html = `
+                   <div class="item p-4 rounded-lg" onclick="toggleContent(this)">
+                       <div class="flex justify-between items-center">
+                           <h3 class="text-xl font-semibold">${title}</h3>
+                           <button class="delete-btn" onclick="deleteItem(event, this, 'ideas')">Delete</button>
+                       </div>
+                       <div class="item-content">
+                           <p class="mb-4">${description}</p>
+                           ${keyPoints.length > 0 ? `
+                               <h4 class="font-semibold mb-2">Key Points:</h4>
+                               <ul class="list-disc pl-5 mb-4">
+                                   ${keyPoints.map(point => `<li>${point}</li>`).join('')}
+                               </ul>
+                           ` : ''}
+                           ${relatedIdeas.length > 0 ? `
+                               <h4 class="font-semibold mb-2">Related Ideas:</h4>
+                               ${relatedIdeas.map(idea => `
+                                   <div class="mb-2">
+                                       <h5 class="font-semibold">${idea.title || 'No Title'}</h5>
+                                       <p>${idea.description || 'No Description'}</p>
+                                   </div>
+                               `).join('')}
+                           ` : ''}
+                           ${actionItems.length > 0 ? `
+                               <h4 class="font-semibold mb-2">Action Items:</h4>
+                               <ul class="list-disc pl-5">
+                                   ${actionItems.map(item => `<li>${item}</li>`).join('')}
+                               </ul>
+                           ` : ''}
+                       </div>
+                   </div>
+               `;
+               section.innerHTML = html + section.innerHTML;
+           } catch (error) {
+               log(`Error in updateIdeasSection: ${error.message}`);
+           }
+       }
+
+       function updateShoppingSection(shopping) {
+           try {
+               const section = document.getElementById('shopping-content');
+               if (!shopping || shopping.length === 0) return;
+
+               let html = '';
+               shopping.forEach(item => {
+                   const healthRatingClass = item.healthRating ? (item.healthRating.toLowerCase() === 'high' ? 'text-green-600' : item.healthRating.toLowerCase() === 'medium' ? 'text-yellow-600' : 'text-red-600') : '';
+                   html += `
+                       <div class="item p-4 rounded-lg" onclick="toggleContent(this)">
+                           <div class="flex justify-between items-center">
+                               <span class="font-semibold text-lg">${item.item || 'No Item'}</span>
+                               <button class="delete-btn" onclick="deleteItem(event, this, 'shopping')">Delete</button>
+                           </div>
+                           <div class="item-content">
+                               <p>Quantity: ${item.quantity || 'N/A'}</p>
+                               <p>Calories: ${item.calories || 'N/A'}</p>
+                               <p>Fat: ${item.fat || 'N/A'}</p>
+                               <p>Protein: ${item.protein || 'N/A'}</p>
+                               <p>Carbs: ${item.carbs || 'N/A'}</p>
+                               <p>Sugar: ${item.sugar || 'N/A'}</p>
+                               <p>Vitamins: ${item.vitamins || 'N/A'}</p>
+                               <p>Health Rating: <span class="font-semibold ${healthRatingClass}">${item.healthRating || 'N/A'}</span></p>
+                               <p class="mt-2 italic">${item.notes || ''}</p>
+                           </div>
+                       </div>
+                   `;
+               });
+               section.innerHTML = html + section.innerHTML;
+           } catch (error) {
+               log(`Error in updateShoppingSection: ${error.message}`);
+           }
+       }
+
+       function updateRemindersSection(reminders) {
+           try {
+               const section = document.getElementById('reminders-content');
+               if (!reminders || reminders.length === 0) return;
+
+               let html = '';
+               reminders.forEach(reminder => {
+                   const priorityClass = reminder.priority ? (reminder.priority.toLowerCase() === 'high' ? 'text-red-600' : reminder.priority.toLowerCase() === 'medium' ? 'text-yellow-600' : 'text-green-600') : '';
+                   html += `
+                       <div class="item p-4 rounded-lg" onclick="toggleContent(this)">
+                           <div class="flex justify-between items-center">
+                               <h3 class="font-semibold text-lg">${reminder.task || 'No Task'}</h3>
+                               <button class="delete-btn" onclick="deleteItem(event, this, 'reminders')">Delete</button>
+                           </div>
+                           <div class="item-content">
+                               <p>Due: ${reminder.dueDate || 'N/A'} ${reminder.dueTime || ''}</p>
+                               <p>Priority: <span class="font-semibold ${priorityClass}">${reminder.priority || 'N/A'}</span></p>
+                               <p class="mt-2 italic">${reminder.notes || ''}</p>
+                           </div>
+                       </div>
+                   `;
+               });
+               section.innerHTML = html + section.innerHTML;
+           } catch (error) {
+               log(`Error in updateRemindersSection: ${error.message}`);
+           }
+       }
+
+       function updatePurchasesSection(purchases) {
+           try {
+               const section = document.getElementById('purchases-content');
+               if (!purchases || purchases.length === 0) return;
+
+               let html = '';
+               purchases.forEach(purchase => {
+                   const healthRatingClass = purchase.healthRating ? (purchase.healthRating.toLowerCase() === 'high' ? 'text-green-600' : purchase.healthRating.toLowerCase() === 'medium' ? 'text-yellow-600' : 'text-red-600') : '';
+                   html += `
+                       <div class="item p-4 rounded-lg" onclick="toggleContent(this)">
+                           <div class="flex justify-between items-center">
+                               <span class="font-semibold text-lg">${purchase.item || 'No Item'}</span>
+                               <button class="delete-btn" onclick="deleteItem(event, this, 'purchases')">Delete</button>
+                           </div>
+                           <div class="item-content">
+                               <p>Price: ${purchase.price || 'N/A'}</p>
+                               <p>Purchase Time: ${purchase.purchaseTime || 'N/A'}</p>
+                               ${purchase.calories ? `<p>Calories: ${purchase.calories}</p>` : ''}
+                               ${purchase.fat ? `<p>Fat: ${purchase.fat}</p>` : ''}
+                               ${purchase.protein ? `<p>Protein: ${purchase.protein}</p>` : ''}
+                               ${purchase.carbs ? `<p>Carbs: ${purchase.carbs}</p>` : ''}
+                               ${purchase.sugar ? `<p>Sugar: ${purchase.sugar}</p>` : ''}
+                               ${purchase.vitamins ? `<p>Vitamins: ${purchase.vitamins}</p>` : ''}
+                               ${purchase.healthRating ? `<p>Health Rating: <span class="font-semibold ${healthRatingClass}">${purchase.healthRating}</span></p>` : ''}
+                               <p class="mt-2 italic">${purchase.notes || ''}</p>
+                           </div>
+                       </div>
+                   `;
+               });
+               section.innerHTML = html + section.innerHTML;
+           } catch (error) {
+               log(`Error in updatePurchasesSection: ${error.message}`);
+           }
+       }
+
+       function toggleContent(element) {
+           const content = element.querySelector('.item-content');
+           content.style.display = content.style.display === 'none' || content.style.display === '' ? 'block' : 'none';
+       }
+
+       function deleteItem(event, button, section) {
+           event.stopPropagation();
+           if (confirm('Are you sure you want to delete this item?')) {
+               button.closest('.item').remove();
+           }
+       }
+
+       let recognition;
+
+       function startVoiceInput() {
+           if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+               const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+               recognition = new SpeechRecognition();
+               recognition.continuous = true;
+               recognition.interimResults = true;
+
+               recognition.onresult = function(event) {
+                   let interimTranscript = '';
+                   let finalTranscript = '';
+
+                   for (let i = event.resultIndex; i < event.results.length; ++i) {
+                       if (event.results[i].isFinal) {
+                           finalTranscript += event.results[i][0].transcript;
+                       } else {
+                           interimTranscript += event.results[i][0].transcript;
+                       }
+                   }
+
+                   userInput.value = finalTranscript + interimTranscript;
+               };
+
+               recognition.onstart = function() {
+                   log('Voice input started.');
+                   userInput.placeholder = "Listening...";
+               };
+
+               recognition.onerror = function(event) {
+                   log('Voice recognition error: ' + event.error);
+               };
+
+               recognition.onend = function() {
+                   log('Voice input stopped.');
+                   userInput.placeholder = "Enter your thoughts or requests...";
+               };
+
+               recognition.start();
+           } else {
+               alert('Speech recognition is not supported in your browser.');
+           }
+       }
+
+       function stopVoiceInput() {
+           if (recognition) {
+               recognition.stop();
+           }
+       }
+
+       document.getElementById('userInput').addEventListener('keypress', function(e) {
+           if (e.key === 'Enter') {
+               e.preventDefault();
+               processInput();
+           }
+       });
+
+       // Utility function to reset recording state
+       function resetRecordingState() {
+           isRecording = false;
+           recordButton.disabled = false;
+           recordButton.classList.remove('recording');
+           recordButton.textContent = '🎤 Record 10s';
+           recordingStatus.textContent = 'Ready';
+           progressBar.style.width = '0%';
+           if (progressInterval) {
+               clearInterval(progressInterval);
+               progressInterval = null;
+           }
+       }
+   </script>
+</body>
+</html>
