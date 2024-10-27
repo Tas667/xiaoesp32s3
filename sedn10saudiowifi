@@ -1,0 +1,569 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <SD.h>
+#include <ESP_I2S.h>
+#include <ArduinoJson.h>
+
+const char* ssid = "";
+const char* password = "";
+
+// XIAO ESP32S3 built-in LEDs
+#define LED_YELLOW 13
+#define LED_RED 12
+
+#define I2S_WS 42
+#define I2S_SD 41
+#define SAMPLE_RATE 16000
+#define RECORD_TIME 10
+#define SD_CS 21
+#define LED_BLINK_INTERVAL 500
+
+// Simple system state tracking
+struct SystemState {
+    // Basic metrics
+    unsigned long uptime;
+    uint32_t freeHeap;
+    uint32_t sdUsedBytes;
+    uint32_t sdTotalBytes;
+    uint32_t recordingCount;
+    String lastError;
+    unsigned long lastErrorTime;
+    bool isRecording;
+    
+    // LED state
+    bool ledYellowState;
+    bool ledRedState;
+    unsigned long lastYellowBlink;
+    unsigned long lastRedBlink;
+} state;
+
+WebServer server(80);
+I2SClass I2S;
+
+// Enhanced web interface
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE HTML>
+<html>
+<head>
+    <title>XIAO Audio System</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f0f0f0;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .metric {
+            margin: 10px 0;
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        .metric-label {
+            color: #666;
+            font-size: 0.9em;
+        }
+        .metric-value {
+            font-size: 1.1em;
+            font-weight: bold;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1.1em;
+        }
+        button:hover { background: #0056b3; }
+        button:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+        }
+        #recordButton.recording {
+            background: #dc3545;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background: #eee;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        .progress-fill {
+            height: 100%;
+            background: #007bff;
+            transition: width 0.3s;
+        }
+        #error-log {
+            color: #dc3545;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>XIAO Audio System</h1>
+        
+        <div class="dashboard">
+            <div class="card">
+                <h2>System Status</h2>
+                <div class="metric">
+                    <div class="metric-label">Uptime</div>
+                    <div class="metric-value" id="uptime">-</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">Free Memory</div>
+                    <div class="metric-value" id="freeHeap">-</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">WiFi Signal</div>
+                    <div class="metric-value" id="wifiSignal">-</div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h2>Storage Status</h2>
+                <div class="metric">
+                    <div class="metric-label">SD Card Usage</div>
+                    <div class="metric-value" id="sdUsage">-</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">Recordings</div>
+                    <div class="metric-value" id="recordingCount">-</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>Audio Recording</h2>
+            <button id="recordButton">Record 10s</button>
+            <div class="progress-bar" id="recordingProgress">
+                <div class="progress-fill" style="width: 0%"></div>
+            </div>
+            <div id="recordingStatus">Ready</div>
+            <audio id="player" controls style="margin-top: 10px; width: 100%"></audio>
+        </div>
+
+        <div class="card">
+            <h2>System Log</h2>
+            <div id="error-log"></div>
+        </div>
+    </div>
+
+    <script>
+        let isRecording = false;
+        const recordButton = document.getElementById('recordButton');
+        const recordingStatus = document.getElementById('recordingStatus');
+        const progressBar = document.getElementById('recordingProgress').querySelector('.progress-fill');
+        const player = document.getElementById('player');
+        
+        // Define the ESP32 server URL
+        const xiaoServerURL = 'http://192.168.0.136'; // Replace with your ESP32's IP address if different
+
+        recordButton.addEventListener('click', async () => {
+            if (isRecording) return;
+            
+            isRecording = true;
+            recordButton.disabled = true;
+            recordButton.classList.add('recording');
+            recordingStatus.textContent = 'Recording...';
+            player.src = '';
+            
+            let startTime = Date.now();
+            let progressInterval = setInterval(() => {
+                let elapsed = Date.now() - startTime;
+                let progress = Math.min((elapsed / 10000) * 100, 100);
+                progressBar.style.width = progress + '%';
+            }, 100);
+            
+            try {
+                const response = await fetch(`${xiaoServerURL}/record`);
+                if (!response.ok) throw new Error('Recording failed');
+                
+                recordingStatus.textContent = 'Processing...';
+                player.src = `${xiaoServerURL}/play`;
+                recordingStatus.textContent = 'Ready';
+            } catch (error) {
+                recordingStatus.textContent = 'Error: ' + error.message;
+                log(`Error: ${error.message}`);
+            } finally {
+                isRecording = false;
+                recordButton.disabled = false;
+                recordButton.classList.remove('recording');
+                clearInterval(progressInterval);
+                progressBar.style.width = '0%';
+                updateSystemStatus();
+            }
+        });
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        function formatDuration(ms) {
+            const seconds = Math.floor((ms / 1000) % 60);
+            const minutes = Math.floor((ms / (1000 * 60)) % 60);
+            const hours = Math.floor(ms / (1000 * 60 * 60));
+            return `${hours}h ${minutes}m ${seconds}s`;
+        }
+
+        async function updateSystemStatus() {
+            try {
+                const response = await fetch(`${xiaoServerURL}/status`);
+                const data = await response.json();
+                
+                document.getElementById('uptime').textContent = formatDuration(data.uptime);
+                document.getElementById('freeHeap').textContent = formatBytes(data.freeHeap);
+                document.getElementById('wifiSignal').textContent = data.rssi + ' dBm';
+                document.getElementById('sdUsage').textContent = 
+                    `${formatBytes(data.sdUsedBytes)} / ${formatBytes(data.sdTotalBytes)}`;
+                document.getElementById('recordingCount').textContent = data.recordingCount;
+                
+                if (data.lastError) {
+                    const errorLog = document.getElementById('error-log');
+                    errorLog.textContent = `Last Error: ${data.lastError}`;
+                }
+                
+                if (data.isRecording && !isRecording) {
+                    recordingStatus.textContent = 'Recording...';
+                    recordButton.disabled = true;
+                } else if (!data.isRecording && !isRecording) {
+                    recordButton.disabled = false;
+                }
+            } catch (error) {
+                console.error('Failed to update status:', error);
+                log(`Failed to update status: ${error.message}`);
+            }
+        }
+
+        // Function to Log Messages to the UI
+        function log(message) {
+            const errorLog = document.getElementById('error-log');
+            errorLog.innerHTML += message + '<br>';
+            errorLog.scrollTop = errorLog.scrollHeight;
+        }
+
+        // Update status every second
+        setInterval(updateSystemStatus, 1000);
+        // Initial update
+        updateSystemStatus();
+    </script>
+</body>
+</html>
+)rawliteral";
+
+// Utility Functions
+void logError(const String& error) {
+    state.lastError = error;
+    state.lastErrorTime = millis();
+    Serial.println("ERROR: " + error);
+    digitalWrite(LED_RED, HIGH);  // Turn on error LED
+}
+
+void handleLEDs() {
+    unsigned long currentMillis = millis();
+    
+    // Yellow LED - WiFi and activity
+    if (WiFi.status() == WL_CONNECTED) {
+        if (state.isRecording) {
+            // Blink during recording
+            if (currentMillis - state.lastYellowBlink >= LED_BLINK_INTERVAL) {
+                state.ledYellowState = !state.ledYellowState;
+                digitalWrite(LED_YELLOW, state.ledYellowState);
+                state.lastYellowBlink = currentMillis;
+            }
+        } else {
+            // Steady on when connected
+            digitalWrite(LED_YELLOW, HIGH);
+        }
+    } else {
+        // Fast blink when disconnected
+        if (currentMillis - state.lastYellowBlink >= LED_BLINK_INTERVAL/2) {
+            state.ledYellowState = !state.ledYellowState;
+            digitalWrite(LED_YELLOW, state.ledYellowState);
+            state.lastYellowBlink = currentMillis;
+        }
+    }
+    
+    // Red LED - Error/Recording status
+    if (state.lastError != "" && (currentMillis - state.lastErrorTime < 5000)) {
+        digitalWrite(LED_RED, HIGH);
+    } else if (state.isRecording) {
+        if (currentMillis - state.lastRedBlink >= LED_BLINK_INTERVAL) {
+            state.ledRedState = !state.ledRedState;
+            digitalWrite(LED_RED, state.ledRedState);
+            state.lastRedBlink = currentMillis;
+        }
+    } else {
+        digitalWrite(LED_RED, LOW);
+    }
+}
+
+void updateSystemMetrics() {
+    state.uptime = millis();
+    state.freeHeap = ESP.getFreeHeap();
+    state.sdUsedBytes = SD.usedBytes();
+    state.sdTotalBytes = SD.totalBytes();
+}
+
+// Function to Send CORS Headers
+void sendCORSHeaders() {
+    server.sendHeader("Access-Control-Allow-Origin", "*", true); // 'first=true' ensures it's sent first
+    server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+// Web Handlers
+void handleRoot() {
+    sendCORSHeaders();
+    server.send(200, "text/html", index_html);
+}
+
+void handleStatus() {
+    sendCORSHeaders();
+    StaticJsonDocument<512> doc;
+    
+    doc["uptime"] = state.uptime;
+    doc["freeHeap"] = state.freeHeap;
+    doc["rssi"] = WiFi.RSSI();
+    doc["sdTotalBytes"] = state.sdTotalBytes;
+    doc["sdUsedBytes"] = state.sdUsedBytes;
+    doc["recordingCount"] = state.recordingCount;
+    doc["isRecording"] = state.isRecording;
+    doc["lastError"] = state.lastError;
+    
+    String response;
+    serializeJson(doc, response);
+    server.send(200, "application/json", response);
+}
+
+void handleRecord() {
+    sendCORSHeaders();
+    Serial.println("   Web request: Start recording");
+    File file = SD.open("/rec.wav", FILE_WRITE);
+    if(!file) {
+        logError("Cannot create WAV file!");
+        server.send(500, "text/plain", "SD error");
+        return;
+    }
+    Serial.println("   Recording file created");
+
+    // Write WAV header
+    Serial.println("   Writing WAV header...");
+    byte header[44] = {
+        'R','I','F','F',    // RIFF
+        0,0,0,0,            // Size (updated later)
+        'W','A','V','E',    // WAVE
+        'f','m','t',' ',    // fmt
+        16,0,0,0,           // fmt size
+        1,0,                // Format = PCM
+        1,0,                // Channels = 1
+        0x80,0x3E,0,0,      // Sample rate (16000)
+        0,0x7D,0,0,         // Byte rate (SampleRate * NumChannels * BitsPerSample/8)
+        2,0,                // Block align
+        16,0,               // Bits per sample
+        'd','a','t','a',    // data
+        0,0,0,0             // Data size (updated later)
+    };
+    file.write(header, 44);
+
+    // Record for 10 seconds
+    Serial.println("   Starting 10s recording...");
+    unsigned long startTime = millis();
+    state.isRecording = true;
+    int bytesWritten = 0;
+    int progressDot = 0;
+    
+    while((millis() - startTime) < (RECORD_TIME * 1000)) {
+        int16_t sample = I2S.read();
+        if(sample != -1) {
+            file.write((byte*)&sample, 2);
+            bytesWritten += 2;
+        }
+        // Print progress dots
+        if((millis() - startTime) / 1000 > progressDot) {
+            Serial.print(".");
+            progressDot++;
+        }
+        handleLEDs();  // Update LEDs during recording
+    }
+    
+    state.isRecording = false;
+    Serial.println("\n   Recording finished");
+    Serial.println("   Bytes written: " + String(bytesWritten));
+
+    // Update WAV header with final size
+    Serial.println("   Updating WAV header...");
+    file.seek(4);
+    unsigned int fileSize = bytesWritten + 36;
+    file.write((byte*)&fileSize, 4);
+    file.seek(40);
+    file.write((byte*)&bytesWritten, 4);
+    
+    file.close();
+    state.recordingCount++;
+    Serial.println("   File saved successfully");
+    server.send(200, "text/plain", "Done");
+}
+
+void handlePlay() {
+    sendCORSHeaders();
+    Serial.println("   Web request: Play recording");
+    File file = SD.open("/rec.wav");
+    if(!file) {
+        logError("Cannot open WAV file!");
+        server.send(500, "text/plain", "File error");
+        return;
+    }
+    Serial.println("   Streaming file to client...");
+    server.sendHeader("Content-Type", "audio/wav");
+    server.streamFile(file, "audio/wav");
+    file.close();
+    Serial.println("   Streaming complete");
+}
+
+void handleNotFound() {
+    sendCORSHeaders();
+    logError("Invalid web request: " + server.uri());
+    server.send(404, "text/plain", "Not found");
+}
+
+void setup() {
+    Serial.begin(115200);
+    Serial.println("\n\n=== Starting XIAO Audio System ===");
+    
+    // Initialize LEDs
+    pinMode(LED_YELLOW, OUTPUT);
+    pinMode(LED_RED, OUTPUT);
+    digitalWrite(LED_YELLOW, LOW);
+    digitalWrite(LED_RED, LOW);
+    
+    // Init SD
+    Serial.println("1. Initializing SD card...");
+    if(!SD.begin(SD_CS)) {
+        logError("SD card initialization failed!");
+        while(1) {
+            delay(1000);
+            Serial.println("SD card error - check connections");
+        }
+    }
+    Serial.println("   SD card initialized successfully!");
+
+    // Init I2S
+    Serial.println("2. Initializing I2S...");
+    I2S.setPinsPdmRx(I2S_WS, I2S_SD);
+    if (!I2S.begin(I2S_MODE_PDM_RX, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO)) {
+        logError("I2S initialization failed!");
+        while(1) {
+            delay(1000);
+            Serial.println("I2S error - check microphone");
+        }
+    }
+    Serial.println("   I2S initialized successfully!");
+
+    // Test microphone
+    Serial.println("3. Testing microphone...");
+    int16_t sample = I2S.read();
+    Serial.println("   Mic test value: " + String(sample));
+    if(sample == -1) {
+        Serial.println("WARNING: Microphone might not be working properly");
+    }
+
+    // Connect WiFi
+    Serial.println("4. Connecting to WiFi...");
+    Serial.println("   SSID: " + String(ssid));
+    WiFi.begin(ssid, password);
+    int wifiAttempts = 0;
+    while (WiFi.status() != WL_CONNECTED && wifiAttempts < 20) {
+        delay(500);
+        digitalWrite(LED_YELLOW, !digitalRead(LED_YELLOW));  // Blink while connecting
+        Serial.print(".");
+        wifiAttempts++;
+    }
+    if(WiFi.status() != WL_CONNECTED) {
+        logError("WiFi connection failed!");
+        while(1) {
+            delay(1000);
+            Serial.println("WiFi error - check credentials");
+        }
+    }
+    Serial.println("\n   WiFi connected successfully!");
+    Serial.println("   IP address: " + WiFi.localIP().toString());
+
+    // Setup web routes
+    Serial.println("5. Setting up web server...");
+    
+    server.on("/", HTTP_GET, handleRoot);
+    server.on("/status", HTTP_GET, handleStatus);
+
+    // Handle OPTIONS for CORS preflight
+    server.on("/record", HTTP_OPTIONS, [](){
+        sendCORSHeaders();
+        server.send(200, "text/plain", "");
+    });
+    server.on("/record", HTTP_GET, handleRecord);
+
+    server.on("/play", HTTP_OPTIONS, [](){
+        sendCORSHeaders();
+        server.send(200, "text/plain", "");
+    });
+    server.on("/play", HTTP_GET, handlePlay);
+
+    // Handle 404 Not Found
+    server.onNotFound(handleNotFound);
+
+    server.begin();
+    Serial.println("   Web server started");
+    digitalWrite(LED_YELLOW, HIGH);  // Show system is ready
+    Serial.println("\n=== Setup Complete ===");
+    Serial.println("Open http://" + WiFi.localIP().toString() + " in your browser");
+    
+    // Initialize system metrics
+    updateSystemMetrics();
+}
+
+void loop() {
+    server.handleClient();
+    handleLEDs();
+    
+    // Update system metrics periodically
+    static unsigned long lastMetricsUpdate = 0;
+    if (millis() - lastMetricsUpdate > 1000) {
+        updateSystemMetrics();
+        lastMetricsUpdate = millis();
+    }
+    
+    // Monitor WiFi connection
+    static unsigned long lastWifiCheck = 0;
+    if (millis() - lastWifiCheck > 10000) {  // Check every 10 seconds
+        lastWifiCheck = millis();
+        if (WiFi.status() != WL_CONNECTED) {
+            Serial.println("WARNING: WiFi disconnected! Reconnecting...");
+            WiFi.reconnect();
+        }
+    }
+    
+    delay(10);  // Prevent watchdog reset
+}
